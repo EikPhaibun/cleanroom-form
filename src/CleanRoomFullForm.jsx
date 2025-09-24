@@ -1,11 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { db, ensureAnonSignIn } from "./firebaseClient";
-import {
-  doc, getDoc, setDoc, runTransaction, serverTimestamp
-} from "firebase/firestore";
-import DocNoField from "./DocNoField"; // <<-- เพิ่มบรรทัดนี้
+import { doc, getDoc, setDoc, runTransaction, serverTimestamp } from "firebase/firestore";
 
-/* ========== Utils ========== */
+/* ---------- Utils ---------- */
 function todayISO() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
@@ -42,7 +39,7 @@ function throttle(fn, ms) {
   };
 }
 
-/* ========== Signature Pad ========== */
+/* ---------- Signature Pad ---------- */
 function SignaturePad({ height = 120, onChange, value }) {
   const canvasRef = useRef(null);
   const drawing = useRef(false);
@@ -89,7 +86,7 @@ function SignaturePad({ height = 120, onChange, value }) {
   );
 }
 
-/* ========== Firestore helpers ========== */
+/* ---------- Firestore helpers ---------- */
 async function getNextDocNoCloud(issueDateISO) {
   await ensureAnonSignIn();
   const ymd = (issueDateISO || todayISO()).replace(/-/g, "");
@@ -116,7 +113,7 @@ async function saveById(id, payload) {
   await setDoc(ref, { ...payload, updatedAt: serverTimestamp() }, { merge: true });
 }
 
-/* ========== Autosave per keyId ========== */
+/* ---------- Autosave per keyId ---------- */
 function useFormDraft(keyId, state, restore) {
   const key = keyId ? `cleanroom:draft:${keyId}` : null;
 
@@ -136,47 +133,34 @@ function useFormDraft(keyId, state, restore) {
   return { clear };
 }
 
-/* ========== Main ========== */
+/* ---------- Main ---------- */
 export default function CleanRoomFullForm() {
   const qs = useMemo(() => new URLSearchParams(window.location.search), []);
-  const [pi, setPi] = useState("");   // เลขอินสแตนซ์ล้วน (ไม่มี "_")
-  const [sn, setSn] = useState("");   // Serial Number เช่น "4210_16"
+  const [pi, setPi] = useState("");
+  const [sn, setSn] = useState("");
 
-  // อ่านค่า URL และ "สกัด PI" ให้ถูกต้องเสมอ
   useEffect(() => {
-    const piRaw = qs.get("PI") || qs.get("pi") || ""; // อาจเป็น "4210" หรือ "4210_16"
-    const snRaw = qs.get("SN") || qs.get("sn") || ""; // มักเป็น "4210_16"
+    const piRaw = qs.get("PI") || qs.get("pi") || "";    // อาจเป็น 4210 หรือ 4210_16
+    const snRaw = qs.get("SN") || qs.get("sn") || "";    // มักเป็น 4210_16
     const parsedPI = (piRaw && piRaw.split("_")[0]) || (snRaw ? snRaw.split("_")[0] : "");
     setPi(parsedPI || "");
     setSn(snRaw || "");
   }, [qs]);
 
-  // ใช้ PI เป็นคีย์หลักเสมอ; ถ้าไม่มีจริง ๆ ค่อย fallback ไปที่ SN
   const keyId = pi ? `PI_${pi}` : sn;
 
   const [issueDate, setIssueDate] = useState(() => todayISO());
-  const [docNo, setDocNo]       = useState("");
+  const [docNo, setDocNo] = useState("");
 
-  const [isGen, setIsGen] = useState(false);
-  const generateDocNo = async () => {
-    try {
-      setIsGen(true);
-      const newDoc = await getNextDocNoCloud(issueDate || todayISO());
-      setDocNo(newDoc);
-    } finally {
-      setIsGen(false);
-    }
-  };
-
-  const [partName, setPartName]             = useState("");
-  const [partDetails, setPartDetails]       = useState("");
-  const [reasonDetails, setReasonDetails]   = useState("");
+  const [partName, setPartName] = useState("");
+  const [partDetails, setPartDetails] = useState("");
+  const [reasonDetails, setReasonDetails] = useState("");
   const [locationDetails, setLocationDetails] = useState("");
-  const [importDate, setImportDate]         = useState("");
-  const [hasMSDS, setHasMSDS]               = useState(null);
-  const [needInform, setNeedInform]         = useState(null);
-  const [evalResult, setEvalResult]         = useState(null);
-  const [qaMgrApprove, setQaMgrApprove]     = useState(null);
+  const [importDate, setImportDate] = useState("");
+  const [hasMSDS, setHasMSDS] = useState(null);
+  const [needInform, setNeedInform] = useState(null);
+  const [evalResult, setEvalResult] = useState(null);
+  const [qaMgrApprove, setQaMgrApprove] = useState(null);
 
   const relatedList = ["MFG1","MFG2","ENG1","ENG2","QA","QE","QEV","MCA","POS"];
   const [related, setRelated] = useState(Object.fromEntries(relatedList.map(k=>[k,false])));
@@ -191,13 +175,13 @@ export default function CleanRoomFullForm() {
   };
   const clearPhoto = () => { setPhotoDataUrl(null); if (photoInputRef.current) photoInputRef.current.value = ""; };
 
-  const [sigRequester, setSigRequester]   = useState(null);
-  const [sigChief, setSigChief]           = useState(null);
-  const [sigMgr, setSigMgr]               = useState(null);
+  const [sigRequester, setSigRequester] = useState(null);
+  const [sigChief, setSigChief] = useState(null);
+  const [sigMgr, setSigMgr] = useState(null);
   const [sigSectionMgr, setSigSectionMgr] = useState(null);
-  const [sigQAStaff, setSigQAStaff]       = useState(null);
-  const [sigQAChief, setSigQAChief]       = useState(null);
-  const [sigQAMgr, setSigQAMgr]           = useState(null);
+  const [sigQAStaff, setSigQAStaff] = useState(null);
+  const [sigQAChief, setSigQAChief] = useState(null);
+  const [sigQAMgr, setSigQAMgr] = useState(null);
 
   const formState = {
     issueDate, docNo, partName, partDetails, reasonDetails, locationDetails, importDate,
@@ -222,18 +206,16 @@ export default function CleanRoomFullForm() {
   }, []);
   useFormDraft(keyId, formState, restore);
 
-  // initial load + migration (กันพลาดทุกกรณี) + auto-generate docNo เมื่อเป็นเอกสารใหม่
+  /* initial load + migration และ "ขอเลขอัตโนมัติ" เมื่อเป็นเอกสารใหม่ */
   useEffect(() => {
     let cancelled = false;
     async function boot() {
       if (!keyId) return;
       await ensureAnonSignIn();
 
-      // 1) ลองโหลดด้วยคีย์หลัก (PI_<PI> หรือ SN)
       let data = await loadById(keyId);
       if (cancelled) return;
 
-      // 2) ถ้า PI เคยถูกส่งมาแบบผิด (เช่น "4210_16") จนอาจเคยเซฟไว้ที่ "PI_4210_16" ให้ย้ายกลับมา "PI_<PI>"
       const piRaw = qs.get("PI") || qs.get("pi") || "";
       if (!data && pi && piRaw.includes("_")) {
         const wrongKey = `PI_${piRaw}`;
@@ -244,7 +226,6 @@ export default function CleanRoomFullForm() {
         }
       }
 
-      // 3) ถ้ายังไม่เจอ และมี SN -> migrate จาก SN -> PI
       if (!data && pi && sn) {
         const snData = await loadById(sn);
         if (snData) {
@@ -256,13 +237,28 @@ export default function CleanRoomFullForm() {
       if (data) {
         restore(data);
       } else {
-        // อินสแตนซ์ใหม่ -> ขอเลขเอกสารมาโชว์เลย
-        await generateDocNo();
+        // ไม่มีข้อมูลเก่า -> ขอเลขเอกสารทันที
+        const newDoc = await getNextDocNoCloud(issueDate || todayISO());
+        if (!cancelled) setDocNo(newDoc);
       }
     }
     boot();
     return () => { cancelled = true; };
   }, [keyId, issueDate, restore, pi, sn, qs]);
+
+  /* ถ้ายังไม่มีเลข และมีการเปลี่ยน Issue Date ก่อน Save -> ขอเลขให้ใหม่ (เฉพาะเอกสารใหม่) */
+  useEffect(() => {
+    let cancelled = false;
+    async function autoGenOnDateChange() {
+      if (!docNo && keyId) {
+        const d = await getNextDocNoCloud(issueDate || todayISO());
+        if (!cancelled) setDocNo(d);
+      }
+    }
+    autoGenOnDateChange();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [issueDate]);
 
   async function handleSave() {
     if (!keyId) { alert("ไม่พบ PI/SN ใน URL"); return; }
@@ -275,8 +271,7 @@ export default function CleanRoomFullForm() {
     const payload = {
       keyId, PI: pi || null, SN: sn || null,
       issueDate, docNo: finalDocNo, partName, partDetails, reasonDetails, locationDetails, importDate,
-      hasMSDS, needInform, evalResult, qaMgrApprove, related,
-      photoDataUrl,
+      hasMSDS, needInform, evalResult, qaMgrApprove, related, photoDataUrl,
       sigRequester, sigChief, sigMgr, sigSectionMgr, sigQAStaff, sigQAChief, sigQAMgr,
       savedAt: new Date().toISOString(),
     };
@@ -308,15 +303,7 @@ export default function CleanRoomFullForm() {
             <td className="label">วันที่ (Issue date):</td>
             <td><input className="inp" type="date" value={issueDate} onChange={e=>setIssueDate(e.target.value)}/></td>
             <td className="label">Document No. :</td>
-            <td>
-              {/* ใช้คอมโพเนนต์ช่องเลข + ปุ่ม Generate */}
-              <DocNoField
-                value={docNo}
-                onChange={setDocNo}
-                onGenerate={generateDocNo}
-                loading={isGen}
-              />
-            </td>
+            <td><input className="inp" type="text" value={docNo} readOnly placeholder="กำลังรันเลข..." /></td>
           </tr>
 
           <tr>
@@ -441,7 +428,7 @@ export default function CleanRoomFullForm() {
   );
 }
 
-/* ========== CSS ========== */
+/* ---------- CSS ---------- */
 const css = `
 @page { size: A4; margin: 10mm; }
 * { box-sizing: border-box; font-family: "Segoe UI","TH Sarabun New", Arial, sans-serif; }
