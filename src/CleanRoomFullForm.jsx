@@ -276,6 +276,61 @@ export default function CleanRoomFullForm() {
     try { await saveById(keyId, payload); alert("บันทึกขึ้น Cloud (Firestore) สำเร็จ ✅"); }
     catch (e) { console.error(e); alert("บันทึกไม่สำเร็จ: " + (e.message || e)); }
   }
+// … (โค้ดด้านบนทั้งหมดเหมือนเดิม ไม่ตัดออก) …
+
+  async function handleSave() {
+    if (!keyId) { alert("ไม่พบ PI/SN ใน URL"); return; }
+    await ensureAnonSignIn();
+    let finalDocNo = docNo;
+    if (!finalDocNo) {
+      finalDocNo = await getNextDocNoCloud(issueDate || todayISO());
+      setDocNo(finalDocNo);
+    }
+    const payload = {
+      keyId, PI: pi || null, SN: sn || null,
+      issueDate, docNo: finalDocNo, partName, partDetails, reasonDetails, locationDetails, importDate,
+      hasMSDS, needInform, evalResult, qaMgrApprove, related, photoDataUrl,
+      sigRequester, sigChief, sigMgr, sigSectionMgr, sigQAStaff, sigQAChief, sigQAMgr,
+      savedAt: new Date().toISOString(),
+    };
+    try { await saveById(keyId, payload); alert("บันทึกขึ้น Cloud (Firestore) สำเร็จ ✅"); }
+    catch (e) { console.error(e); alert("บันทึกไม่สำเร็จ: " + (e.message || e)); }
+  }
+
+  // 👉 เพิ่มฟังก์ชันใหม่
+  async function handleSubmitAndRedirect() {
+    await handleSave();
+    if (!sn) {
+      alert("ไม่พบ Serial Number (SN) ใน URL");
+      return;
+    }
+    const k2Url = `https://k2.in.th/Runtime/Runtime/Form/importFlow/Requester/?SN=${sn}&Action=Submit`;
+    window.location.href = k2Url;
+  }
+
+  const photoInput = (
+    <div className="no-print photo-tools">
+      <input ref={photoInputRef} type="file" accept="image/*" onChange={onPickPhoto}/>
+      {photoDataUrl && <button type="button" className="btn ghost" onClick={clearPhoto}>Clear</button>}
+    </div>
+  );
+
+  return (
+    <div className="page">
+      <style>{css}</style>
+      <div className="company-line">NHK Spring (Thailand) Co.,Ltd : DDS Division</div>
+
+      {/* … (ตารางฟอร์มทั้งหมดของอิ๊คตามไฟล์เดิม) … */}
+
+      <div className="no-print" style={{width:"210mm", margin:"10px auto 0", display:"flex", gap:8, justifyContent:"flex-end"}}>
+        <button type="button" className="btn" onClick={handleSave}>Save</button>
+        <button type="button" className="btn primary" onClick={handleSubmitAndRedirect}>Submit & Redirect</button>
+      </div>
+    </div>
+  );
+}
+
+// … (CSS ด้านล่างทั้งหมดตามไฟล์เดิม) …
 
   const photoInput = (
     <div className="no-print photo-tools">
@@ -424,7 +479,7 @@ export default function CleanRoomFullForm() {
       </div>
     </div>
   );
-}
+
 
 /* ---------- CSS ---------- */
 const css = `
