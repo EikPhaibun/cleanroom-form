@@ -3,6 +3,7 @@ import { db, ensureAnonSignIn } from "./firebaseClient";
 import {
   doc, getDoc, setDoc, runTransaction, serverTimestamp
 } from "firebase/firestore";
+import DocNoField from "./DocNoField"; // <<-- เพิ่มบรรทัดนี้
 
 /* ========== Utils ========== */
 function todayISO() {
@@ -156,6 +157,17 @@ export default function CleanRoomFullForm() {
   const [issueDate, setIssueDate] = useState(() => todayISO());
   const [docNo, setDocNo]       = useState("");
 
+  const [isGen, setIsGen] = useState(false);
+  const generateDocNo = async () => {
+    try {
+      setIsGen(true);
+      const newDoc = await getNextDocNoCloud(issueDate || todayISO());
+      setDocNo(newDoc);
+    } finally {
+      setIsGen(false);
+    }
+  };
+
   const [partName, setPartName]             = useState("");
   const [partDetails, setPartDetails]       = useState("");
   const [reasonDetails, setReasonDetails]   = useState("");
@@ -210,7 +222,7 @@ export default function CleanRoomFullForm() {
   }, []);
   useFormDraft(keyId, formState, restore);
 
-  // initial load + migration (กันพลาดทุกกรณี)
+  // initial load + migration (กันพลาดทุกกรณี) + auto-generate docNo เมื่อเป็นเอกสารใหม่
   useEffect(() => {
     let cancelled = false;
     async function boot() {
@@ -244,8 +256,8 @@ export default function CleanRoomFullForm() {
       if (data) {
         restore(data);
       } else {
-        const newDoc = await getNextDocNoCloud(issueDate || todayISO());
-        if (!cancelled) setDocNo(newDoc);
+        // อินสแตนซ์ใหม่ -> ขอเลขเอกสารมาโชว์เลย
+        await generateDocNo();
       }
     }
     boot();
@@ -256,7 +268,10 @@ export default function CleanRoomFullForm() {
     if (!keyId) { alert("ไม่พบ PI/SN ใน URL"); return; }
     await ensureAnonSignIn();
     let finalDocNo = docNo;
-    if (!finalDocNo) { finalDocNo = await getNextDocNoCloud(issueDate || todayISO()); setDocNo(finalDocNo); }
+    if (!finalDocNo) {
+      finalDocNo = await getNextDocNoCloud(issueDate || todayISO());
+      setDocNo(finalDocNo);
+    }
     const payload = {
       keyId, PI: pi || null, SN: sn || null,
       issueDate, docNo: finalDocNo, partName, partDetails, reasonDetails, locationDetails, importDate,
@@ -293,7 +308,15 @@ export default function CleanRoomFullForm() {
             <td className="label">วันที่ (Issue date):</td>
             <td><input className="inp" type="date" value={issueDate} onChange={e=>setIssueDate(e.target.value)}/></td>
             <td className="label">Document No. :</td>
-            <td><input className="inp" type="text" value={docNo} onChange={e=>setDocNo(e.target.value)} placeholder="auto from cloud..."/></td>
+            <td>
+              {/* ใช้คอมโพเนนต์ช่องเลข + ปุ่ม Generate */}
+              <DocNoField
+                value={docNo}
+                onChange={setDocNo}
+                onGenerate={generateDocNo}
+                loading={isGen}
+              />
+            </td>
           </tr>
 
           <tr>
