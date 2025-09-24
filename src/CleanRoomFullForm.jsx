@@ -107,8 +107,7 @@ function useFormDraft(keyId, state, restore) {
   useEffect(() => {
     if (!key) return;
     try { const raw = localStorage.getItem(key); if (raw) restore(JSON.parse(raw)); } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, restore]);
 
   const save = React.useMemo(() => throttle((data) => {
     if (!key) return; try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
@@ -188,23 +187,36 @@ export default function CleanRoomFullForm() {
   }, []);
   useFormDraft(keyId, formState, restore);
 
-  // initial load
+  // initial load + migration SN -> PI (ถ้าจำเป็น)
   useEffect(() => {
     let cancelled = false;
     async function boot() {
       if (!keyId) return;
       await ensureAnonSignIn();
-      const data = await loadById(keyId);
+
+      // 1) พยายามโหลดด้วยคีย์หลัก (PI_<PI> หรือ SN)
+      let data = await loadById(keyId);
       if (cancelled) return;
-      if (data) restore(data);
-      else {
+
+      // 2) ถ้าเปิดด้วย PI แล้วยังไม่เจอข้อมูล ให้ลองโหลดจาก SN แล้วคัดลอกมาเก็บใต้ PI
+      if (!data && pi && sn) {
+        const snData = await loadById(sn);
+        if (snData) {
+          await saveById(`PI_${pi}`, { ...snData, keyId: `PI_${pi}`, PI: pi, SN: sn });
+          data = await loadById(`PI_${pi}`);
+        }
+      }
+
+      if (data) {
+        restore(data);
+      } else {
         const newDoc = await getNextDocNoCloud(issueDate || todayISO());
         if (!cancelled) setDocNo(newDoc);
       }
     }
     boot();
     return () => { cancelled = true; };
-  }, [keyId, issueDate, restore]);
+  }, [keyId, issueDate, restore, pi, sn]);
 
   async function handleSave() {
     if (!keyId) { alert("ไม่พบ PI/SN ใน URL"); return; }
