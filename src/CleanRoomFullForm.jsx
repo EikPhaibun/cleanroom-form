@@ -1,41 +1,99 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { db } from "./firebaseClient";
+import {
+  doc, getDoc, setDoc, runTransaction, serverTimestamp
+} from "firebase/firestore";
 
-/** ---------------- SignaturePad (no external libs) ---------------- */
-function SignaturePad({ height = 120, onChange }) {
+/* ================= Helpers: date, image resize ================= */
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+
+async function fileToDataURLResized(file, maxSize = 1600, quality = 0.9) {
+  const dataURL = await new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.onerror = rej;
+    fr.readAsDataURL(file);
+  });
+  const img = await new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = rej;
+    im.src = dataURL;
+  });
+  const w = img.width, h = img.height;
+  const scale = Math.min(1, maxSize / Math.max(w, h));
+  if (scale >= 1) return dataURL;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(w * scale);
+  canvas.height = Math.round(h * scale);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", quality);
+}
+
+function throttle(fn, ms) {
+  let t, last = 0;
+  return (...args) => {
+    const now = Date.now();
+    if (now - last >= ms) { last = now; fn(...args); }
+    else { clearTimeout(t); t = setTimeout(() => { last = Date.now(); fn(...args); }, ms - (now - last)); }
+  };
+}
+
+/* ================= Signature Pad (no libs) ================= */
+function SignaturePad({ height = 120, onChange, value }) {
   const canvasRef = useRef(null);
   const drawing = useRef(false);
-  const [empty, setEmpty] = useState(true);
 
   useEffect(() => {
     const cvs = canvasRef.current;
-    const ctx = cvs.getContext("2d");
-    // crisp line
-    ctx.lineWidth = 2;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    // scale for HiDPI
     const ratio = Math.max(window.devicePixelRatio || 1, 1);
     const w = cvs.clientWidth * ratio;
     const h = cvs.clientHeight * ratio;
     cvs.width = w; cvs.height = h;
+    const ctx = cvs.getContext("2d");
     ctx.scale(ratio, ratio);
-  }, []);
+    ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+
+    if (value) {
+      const img = new Image();
+      img.onload = () => ctx.drawImage(img, 0, 0, cvs.clientWidth, cvs.clientHeight);
+      img.src = value;
+    }
+  }, [value]);
 
   const pos = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
-    if (e.touches?.length) e = e.touches[0];
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const p = e.touches?.[0] ?? e;
+    return { x: p.clientX - rect.left, y: p.clientY - rect.top };
   };
 
-  const start = (e) => { drawing.current = true; const {x,y}=pos(e); const ctx=canvasRef.current.getContext("2d"); ctx.beginPath(); ctx.moveTo(x,y); setEmpty(false); };
-  const move  = (e) => { if(!drawing.current) return; const {x,y}=pos(e); const ctx=canvasRef.current.getContext("2d"); ctx.lineTo(x,y); ctx.stroke(); e.preventDefault(); };
-  const end   = () => { drawing.current = false; if(onChange){ onChange(canvasRef.current.toDataURL("image/png")); } };
-
+  const start = (e) => {
+    drawing.current = true;
+    const { x, y } = pos(e);
+    const ctx = canvasRef.current.getContext("2d");
+    ctx.beginPath(); ctx.moveTo(x, y);
+    e.preventDefault();
+  };
+  const move = (e) => {
+    if (!drawing.current) return;
+    const { x, y } = pos(e);
+    const ctx = canvasRef.current.getContext("2d");
+    ctx.lineTo(x, y); ctx.stroke();
+    e.preventDefault();
+  };
+  const end = () => {
+    if (!drawing.current) return;
+    drawing.current = false;
+    onChange?.(canvasRef.current.toDataURL("image/png"));
+  };
   const clear = () => {
     const cvs = canvasRef.current, ctx = cvs.getContext("2d");
-    ctx.clearRect(0,0,cvs.width, cvs.height);
-    setEmpty(true);
-    onChange && onChange(null);
+    ctx.clearRect(0, 0, cvs.width, cvs.height);
+    onChange?.(null);
   };
 
   return (
@@ -48,45 +106,192 @@ function SignaturePad({ height = 120, onChange }) {
         onTouchStart={start} onTouchMove={move} onTouchEnd={end}
       />
       <div className="sig-tools no-print">
-        <button type="button" className="btn ghost" onClick={clear} disabled={empty}>Clear</button>
+        <button type="button" className="btn ghost" onClick={clear}>Clear</button>
         <span className="sig-hint">ลงนาม / Sign here</span>
       </div>
     </div>
   );
 }
 
-/** ---------------- Main form ---------------- */
+/* ================= Cloud (Firestore) ================= */
+// docCounters/{yyyymmdd}.seq -> รันเลขเอกสารกลาง (ไม่ชน)
+async function getNextDocNoCloud(issueDateISO) {
+  const ymd = (issueDateISO || todayISO()).replace(/-/g, "");
+  const counterRef = doc(db, "docCounters", ymd);
+  const seq = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(counterRef);
+    const cur = snap.exists() ? (snap.data().seq || 0) : 0;
+    const next = cur + 1;
+    tx.set(counterRef, { seq: next, updatedAt: serverTimestamp() }, { merge: true });
+    return next;
+  });
+  return `CL-${ymd}-${String(seq).padStart(4, "0")}`;
+}
+
+async function loadBySN(sn) {
+  const ref = doc(db, "cleanroom", sn);
+  const snap = await getDoc(ref);
+  return snap.exists() ? snap.data() : null;
+}
+
+async function saveBySN(sn, payload) {
+  const ref = doc(db, "cleanroom", sn);
+  await setDoc(ref, { ...payload, updatedAt: serverTimestamp() }, { merge: true });
+}
+
+/* ================= Autosave (localStorage by SN) ================= */
+function useFormDraft(sn, state, restore) {
+  const key = sn ? `cleanroom:draft:${sn}` : null;
+
+  useEffect(() => {
+    if (!key) return;
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) restore(JSON.parse(raw));
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  const save = React.useMemo(() => throttle((data) => {
+    if (!key) return;
+    try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
+  }, 600), [key]);
+
+  useEffect(() => { if (key) save(state); }, [state, key, save]);
+
+  const clear = React.useCallback(() => { if (key) localStorage.removeItem(key); }, [key]);
+  return { clear };
+}
+
+/* ================= Main ================= */
 export default function CleanRoomFullForm() {
   const qs = useMemo(() => new URLSearchParams(window.location.search), []);
   const [sn, setSn] = useState("");
 
   useEffect(() => setSn(qs.get("SN") || qs.get("sn") || ""), [qs]);
 
-  // photo
-  const [photoUrl, setPhotoUrl] = useState("");
-  const photoRef = useRef(null);
-  const onPickPhoto = (e) => {
-    const f = e.target.files?.[0];
-    if (!f) return setPhotoUrl("");
-    const url = URL.createObjectURL(f);
-    setPhotoUrl(url);
-  };
-  const clearPhoto = () => { setPhotoUrl(""); if (photoRef.current) photoRef.current.value = ""; };
+  // fields
+  const [issueDate, setIssueDate] = useState(() => todayISO());
+  const [docNo, setDocNo] = useState("");
 
-  // radios
+  const [partName, setPartName] = useState("");
+  const [partDetails, setPartDetails] = useState("");
+  const [reasonDetails, setReasonDetails] = useState("");
+  const [locationDetails, setLocationDetails] = useState("");
+  const [importDate, setImportDate] = useState("");
   const [hasMSDS, setHasMSDS] = useState(null);
   const [needInform, setNeedInform] = useState(null);
   const [evalResult, setEvalResult] = useState(null);
   const [qaMgrApprove, setQaMgrApprove] = useState(null);
 
-  // related sections
   const relatedList = ["MFG1","MFG2","ENG1","ENG2","QA","QE","QEV","MCA","POS"];
   const [related, setRelated] = useState(Object.fromEntries(relatedList.map(k=>[k,false])));
+
+  const [photoDataUrl, setPhotoDataUrl] = useState(null);
+  const photoInputRef = useRef(null);
+  const onPickPhoto = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) { setPhotoDataUrl(null); return; }
+    const dataUrl = await fileToDataURLResized(f, 1600, 0.9);
+    setPhotoDataUrl(dataUrl);
+  };
+  const clearPhoto = () => { setPhotoDataUrl(null); if (photoInputRef.current) photoInputRef.current.value = ""; };
+
+  const [sigRequester, setSigRequester] = useState(null);
+  const [sigChief, setSigChief] = useState(null);
+  const [sigMgr, setSigMgr] = useState(null);
+  const [sigSectionMgr, setSigSectionMgr] = useState(null);
+  const [sigQAStaff, setSigQAStaff] = useState(null);
+  const [sigQAChief, setSigQAChief] = useState(null);
+  const [sigQAMgr, setSigQAMgr] = useState(null);
+
+  const formState = {
+    issueDate, docNo, partName, partDetails, reasonDetails, locationDetails, importDate,
+    hasMSDS, needInform, evalResult, qaMgrApprove,
+    related, photoDataUrl,
+    sigRequester, sigChief, sigMgr, sigSectionMgr, sigQAStaff, sigQAChief, sigQAMgr,
+  };
+  const restore = React.useCallback((d) => {
+    if (!d) return;
+    setIssueDate(d.issueDate ?? todayISO());
+    setDocNo(d.docNo ?? "");
+    setPartName(d.partName ?? "");
+    setPartDetails(d.partDetails ?? "");
+    setReasonDetails(d.reasonDetails ?? "");
+    setLocationDetails(d.locationDetails ?? "");
+    setImportDate(d.importDate ?? "");
+    setHasMSDS(d.hasMSDS ?? null);
+    setNeedInform(d.needInform ?? null);
+    setEvalResult(d.evalResult ?? null);
+    setQaMgrApprove(d.qaMgrApprove ?? null);
+    setRelated(d.related ?? Object.fromEntries(relatedList.map(k=>[k,false])));
+    setPhotoDataUrl(d.photoDataUrl ?? null);
+    setSigRequester(d.sigRequester ?? null);
+    setSigChief(d.sigChief ?? null);
+    setSigMgr(d.sigMgr ?? null);
+    setSigSectionMgr(d.sigSectionMgr ?? null);
+    setSigQAStaff(d.sigQAStaff ?? null);
+    setSigQAChief(d.sigQAChief ?? null);
+    setSigQAMgr(d.sigQAMgr ?? null);
+  }, []);
+  useFormDraft(sn, formState, restore); // autosave local
+
+  // first-load by SN: load from Firestore OR allocate docNo
+  useEffect(() => {
+    let cancelled = false;
+    async function boot() {
+      if (!sn) return;
+      const data = await loadBySN(sn);
+      if (cancelled) return;
+      if (data) {
+        restore(data);
+      } else {
+        // new doc -> get cloud docNo
+        const newDoc = await getNextDocNoCloud(issueDate || todayISO());
+        if (!cancelled) setDocNo(newDoc);
+      }
+    }
+    boot();
+    return () => { cancelled = true; };
+  }, [sn, issueDate, restore]);
+
+  async function handleSave() {
+    if (!sn) { alert("ไม่พบ SN ใน URL"); return; }
+    let finalDocNo = docNo;
+    if (!finalDocNo) {
+      finalDocNo = await getNextDocNoCloud(issueDate || todayISO());
+      setDocNo(finalDocNo);
+    }
+    const payload = {
+      SN: sn,
+      issueDate, docNo: finalDocNo,
+      partName, partDetails, reasonDetails, locationDetails, importDate,
+      hasMSDS, needInform, evalResult, qaMgrApprove,
+      related,
+      photoDataUrl,
+      sigRequester, sigChief, sigMgr, sigSectionMgr, sigQAStaff, sigQAChief, sigQAMgr,
+      savedAt: new Date().toISOString(),
+    };
+    try {
+      await saveBySN(sn, payload);
+      alert("บันทึกขึ้น Cloud (Firestore) สำเร็จ ✅");
+    } catch (e) {
+      console.error(e);
+      alert("บันทึกไม่สำเร็จ: " + (e.message || e));
+    }
+  }
+
+  // UI
+  const photoInput = (
+    <div className="no-print photo-tools">
+      <input ref={photoInputRef} type="file" accept="image/*" onChange={onPickPhoto}/>
+      {photoDataUrl && <button type="button" className="btn ghost" onClick={clearPhoto}>Clear</button>}
+    </div>
+  );
 
   return (
     <div className="page">
       <style>{css}</style>
-
       <div className="company-line">NBK Spring (Thailand) Co.,Ltd : DDS Division</div>
 
       <table className="form">
@@ -95,50 +300,43 @@ export default function CleanRoomFullForm() {
           <col style={{width:"22%"}}/><col style={{width:"28%"}}/>
         </colgroup>
         <tbody>
-          {/* Title */}
           <tr><td className="title" colSpan={4}>Import part to Clean room Notification</td></tr>
 
-          {/* Issue date / DocNo */}
           <tr>
             <td className="label">วันที่ (Issue date):</td>
-            <td><input className="inp" type="date"/></td>
+            <td><input className="inp" type="date" value={issueDate} onChange={e=>setIssueDate(e.target.value)}/></td>
             <td className="label">Document No. :</td>
-            <td><input className="inp" type="text"/></td>
+            <td><input className="inp" type="text" value={docNo} onChange={e=>setDocNo(e.target.value)} placeholder="auto from cloud..."/></td>
           </tr>
 
-          {/* Part + Photo block */}
           <tr>
             <td className="label">ชื่อชิ้นงาน (Part name):</td>
-            <td><input className="inp" type="text"/></td>
+            <td><input className="inp" type="text" value={partName} onChange={e=>setPartName(e.target.value)}/></td>
             <td className="label">รูปถ่ายประกอบ (Photo):</td>
             <td rowSpan={3} className="photoBox">
               <div className="photo-area">
-                {photoUrl ? <img alt="photo" src={photoUrl}/> : <div className="photo-hint">Insert here</div>}
+                {photoDataUrl ? <img src={photoDataUrl} alt="photo"/> : <div className="photo-hint">Insert here</div>}
               </div>
-              <div className="no-print photo-tools">
-                <input ref={photoRef} type="file" accept="image/*" onChange={onPickPhoto}/>
-                {photoUrl && <button type="button" className="btn ghost" onClick={clearPhoto}>Clear</button>}
-              </div>
+              {photoInput}
             </td>
           </tr>
           <tr>
             <td className="label">รายละเอียดของชิ้นส่วน/ชิ้นงาน (Part details):</td>
-            <td colSpan={2}><textarea className="ta"/></td>
+            <td colSpan={2}><textarea className="ta" value={partDetails} onChange={e=>setPartDetails(e.target.value)} /></td>
           </tr>
           <tr>
             <td className="label">เหตุผลที่ต้องใช้ (Reason details):</td>
-            <td colSpan={2}><textarea className="ta"/></td>
+            <td colSpan={2}><textarea className="ta" value={reasonDetails} onChange={e=>setReasonDetails(e.target.value)} /></td>
           </tr>
 
           <tr>
             <td className="label">ระบุพื้นที่ใช้งานใน Clean room (Location details):</td>
-            <td colSpan={3}><input className="inp" type="text"/></td>
+            <td colSpan={3}><input className="inp" type="text" value={locationDetails} onChange={e=>setLocationDetails(e.target.value)}/></td>
           </tr>
 
-          {/* Import date + MSDS + Need inform */}
           <tr>
             <td className="label">ระบุวันที่นำเข้า (Import date):</td>
-            <td><input className="inp" type="date"/></td>
+            <td><input className="inp" type="date" value={importDate} onChange={e=>setImportDate(e.target.value)} /></td>
             <td className="label center">แนบเอกสารผลทดสอบ (MSDS/LAB)</td>
             <td className="noPad">
               <div className="rowInline">
@@ -160,10 +358,10 @@ export default function CleanRoomFullForm() {
             <td className="headCell rightPad">Comment :</td>
           </tr>
           <tr>
-            <td className="signCell"><SignaturePad onChange={()=>{}}/></td>
-            <td className="signCell"><SignaturePad onChange={()=>{}}/></td>
-            <td className="signCell"><SignaturePad onChange={()=>{}}/></td>
-            <td className="signCell"><textarea className="ta" style={{height:118}}/></td>
+            <td className="signCell"><SignaturePad value={sigRequester} onChange={setSigRequester} /></td>
+            <td className="signCell"><SignaturePad value={sigChief} onChange={setSigChief} /></td>
+            <td className="signCell"><SignaturePad value={sigMgr} onChange={setSigMgr} /></td>
+            <td className="signCell"><textarea className="ta" style={{height:118}} /></td>
           </tr>
 
           {/* Related section */}
@@ -172,14 +370,14 @@ export default function CleanRoomFullForm() {
             <td colSpan={4} className="relWrap">
               {relatedList.map(k=>(
                 <label key={k} className="relItem">
-                  <input type="checkbox" checked={related[k]} onChange={()=>setRelated(s=>({...s,[k]:!s[k]}))}/> <span>{k}</span>
+                  <input type="checkbox" checked={!!related[k]} onChange={()=>setRelated(s=>({...s,[k]:!s[k]}))}/> <span>{k}</span>
                 </label>
               ))}
             </td>
           </tr>
           <tr>
             <td className="label">Section MGR</td>
-            <td colSpan={3} className="signCell"><SignaturePad onChange={()=>{}}/></td>
+            <td colSpan={3} className="signCell"><SignaturePad value={sigSectionMgr} onChange={setSigSectionMgr} /></td>
           </tr>
 
           {/* QA Section */}
@@ -197,13 +395,13 @@ export default function CleanRoomFullForm() {
           </tr>
           <tr>
             <td className="label center">QA Staff</td>
-            <td className="signCell"><SignaturePad onChange={()=>{}}/></td>
+            <td className="signCell"><SignaturePad value={sigQAStaff} onChange={setSigQAStaff} /></td>
             <td className="label center">QA Chief</td>
-            <td className="signCell"><SignaturePad onChange={()=>{}}/></td>
+            <td className="signCell"><SignaturePad value={sigQAChief} onChange={setSigQAChief} /></td>
           </tr>
           <tr>
             <td className="label">หมายเหตุ (Remark)</td>
-            <td colSpan={3}><textarea className="ta tall"/></td>
+            <td colSpan={3}><textarea className="ta tall" /></td>
           </tr>
 
           {/* QA MGR Approval */}
@@ -215,22 +413,25 @@ export default function CleanRoomFullForm() {
               <label className="ck"><input type="radio" name="qaMgr" checked={qaMgrApprove===false} onChange={()=>setQaMgrApprove(false)}/> ไม่อนุมัติ (Unapproved)</label>
             </td>
             <td className="label">Comment :</td>
-            <td><input className="inp" type="text"/></td>
+            <td><input className="inp" type="text" /></td>
           </tr>
           <tr>
             <td className="label">Approval sign</td>
-            <td colSpan={3} className="signCell"><SignaturePad height={140} onChange={()=>{}}/></td>
+            <td colSpan={3} className="signCell"><SignaturePad height={140} value={sigQAMgr} onChange={setSigQAMgr} /></td>
           </tr>
 
-          {/* Footer */}
           <tr><td colSpan={4} className="footer">SN: {sn || "-"}</td></tr>
         </tbody>
       </table>
+
+      <div className="no-print" style={{width:"210mm", margin:"10px auto 0", display:"flex", gap:8, justifyContent:"flex-end"}}>
+        <button type="button" className="btn primary" onClick={handleSave}>Save</button>
+      </div>
     </div>
   );
 }
 
-/* ---------------- CSS (print-friendly; A4; table precise) ---------------- */
+/* ================= CSS ================= */
 const css = `
 @page { size: A4; margin: 10mm; }
 * { box-sizing: border-box; font-family: "Segoe UI","TH Sarabun New", Arial, sans-serif; }
@@ -241,7 +442,6 @@ const css = `
 .title { text-align:center; font-weight:800; font-size:16px; padding:8px 6px; }
 .label { font-weight:700; background:#f8f8f8; }
 .center { text-align:center; }
-.rightPad { padding-right:10px; }
 .noPad { padding:4px 6px; }
 
 .inp { width:100%; border:1px solid #000; padding:4px 6px; height:28px; }
@@ -261,9 +461,9 @@ const css = `
 .sig-canvas { display:block; width:100%; height:100%; cursor: crosshair; }
 .sig-tools { display:flex; gap:8px; align-items:center; padding:4px 0; }
 .sig-hint { color:#666; font-size:12px; }
-.btn { appearance:none; padding:6px 10px; border:1px solid #cbd2da; border-radius:6px; background:#fff; cursor:pointer; font-weight:600; }
+.btn { appearance:none; padding:8px 12px; border:1px solid #cbd2da; border-radius:6px; background:#fff; cursor:pointer; font-weight:600; }
 .btn:hover { background:#f3f5f7; }
-.btn.ghost { background:transparent; }
+.btn.primary { background:#0d6efd; color:#fff; border-color:#0d6efd; }
 .evalBox { display:flex; gap:16px; justify-content:center; }
 .ck { display:inline-flex; align-items:center; gap:6px; margin-right:10px; }
 
