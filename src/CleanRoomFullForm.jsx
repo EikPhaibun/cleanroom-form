@@ -214,7 +214,6 @@ export default function CleanRoomFullForm() {
       await ensureAnonSignIn();
 
       let data = await loadById(keyId);
-      if (cancelled) return;
 
       const piRaw = qs.get("PI") || qs.get("pi") || "";
       if (!data && pi && piRaw.includes("_")) {
@@ -235,9 +234,8 @@ export default function CleanRoomFullForm() {
       }
 
       if (data) {
-        restore(data);
+        if (!cancelled) restore(data);
       } else {
-        // ไม่มีข้อมูลเก่า -> ขอเลขเอกสารทันที
         const newDoc = await getNextDocNoCloud(issueDate || todayISO());
         if (!cancelled) setDocNo(newDoc);
       }
