@@ -12,27 +12,36 @@ function todayISO() {
 async function fileToDataURLResized(file, maxSize = 1600, quality = 0.9) {
   const dataURL = await new Promise((res, rej) => {
     const fr = new FileReader();
-    fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(file);
+    fr.onload = () => res(fr.result);
+    fr.onerror = rej;
+    fr.readAsDataURL(file);
   });
   const img = await new Promise((res, rej) => {
-    const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = dataURL;
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = rej;
+    im.src = dataURL;
   });
-  const w = img.width, h = img.height, scale = Math.min(1, maxSize / Math.max(w, h));
+  const w = img.width, h = img.height;
+  const scale = Math.min(1, maxSize / Math.max(w, h));
   if (scale >= 1) return dataURL;
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
-  const ctx = canvas.getContext("2d"); ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  canvas.width = Math.round(w * scale);
+  canvas.height = Math.round(h * scale);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL("image/jpeg", quality);
 }
 function throttle(fn, ms) {
   let t, last = 0;
-  return (...a) => { const now = Date.now();
+  return (...a) => {
+    const now = Date.now();
     if (now - last >= ms) { last = now; fn(...a); }
     else { clearTimeout(t); t = setTimeout(() => { last = Date.now(); fn(...a); }, ms - (now - last)); }
   };
 }
 
-/* ========== Signature Pad (no libs) ========== */
+/* ========== Signature Pad ========== */
 function SignaturePad({ height = 120, onChange, value }) {
   const canvasRef = useRef(null);
   const drawing = useRef(false);
@@ -43,8 +52,13 @@ function SignaturePad({ height = 120, onChange, value }) {
     const w = cvs.clientWidth * ratio, h = cvs.clientHeight * ratio;
     cvs.width = w; cvs.height = h;
     const ctx = cvs.getContext("2d");
-    ctx.scale(ratio, ratio); ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
-    if (value) { const img = new Image(); img.onload = () => ctx.drawImage(img,0,0,cvs.clientWidth,cvs.clientHeight); img.src = value; }
+    ctx.scale(ratio, ratio);
+    ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    if (value) {
+      const img = new Image();
+      img.onload = () => ctx.drawImage(img,0,0,cvs.clientWidth,cvs.clientHeight);
+      img.src = value;
+    }
   }, [value]);
 
   const pos = (e) => {
@@ -89,6 +103,7 @@ async function getNextDocNoCloud(issueDateISO) {
   return `CL-${ymd}-${String(seq).padStart(4, "0")}`;
 }
 async function loadById(id) {
+  if (!id) return null;
   await ensureAnonSignIn();
   const ref = doc(db, "cleanroom", id);
   const snap = await getDoc(ref);
@@ -100,7 +115,7 @@ async function saveById(id, payload) {
   await setDoc(ref, { ...payload, updatedAt: serverTimestamp() }, { merge: true });
 }
 
-/* ========== Autosave (per keyId) ========== */
+/* ========== Autosave per keyId ========== */
 function useFormDraft(keyId, state, restore) {
   const key = keyId ? `cleanroom:draft:${keyId}` : null;
 
@@ -110,7 +125,8 @@ function useFormDraft(keyId, state, restore) {
   }, [key, restore]);
 
   const save = React.useMemo(() => throttle((data) => {
-    if (!key) return; try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
+    if (!key) return;
+    try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
   }, 600), [key]);
 
   useEffect(() => { if (key) save(state); }, [state, key, save]);
@@ -122,14 +138,19 @@ function useFormDraft(keyId, state, restore) {
 /* ========== Main ========== */
 export default function CleanRoomFullForm() {
   const qs = useMemo(() => new URLSearchParams(window.location.search), []);
-  const [pi, setPi] = useState("");
-  const [sn, setSn] = useState("");
+  const [pi, setPi] = useState("");   // เลขอินสแตนซ์ล้วน (ไม่มี "_")
+  const [sn, setSn] = useState("");   // Serial Number เช่น "4210_16"
+
+  // อ่านค่า URL และ "สกัด PI" ให้ถูกต้องเสมอ
   useEffect(() => {
-    setPi(qs.get("PI") || qs.get("pi") || "");
-    setSn(qs.get("SN") || qs.get("sn") || "");
+    const piRaw = qs.get("PI") || qs.get("pi") || ""; // อาจเป็น "4210" หรือ "4210_16"
+    const snRaw = qs.get("SN") || qs.get("sn") || ""; // มักเป็น "4210_16"
+    const parsedPI = (piRaw && piRaw.split("_")[0]) || (snRaw ? snRaw.split("_")[0] : "");
+    setPi(parsedPI || "");
+    setSn(snRaw || "");
   }, [qs]);
 
-  // ใช้ PI เป็นหลัก; ถ้าไม่มี PI (เช่นทดสอบลิ้งค์เอง) ค่อย fallback ไป SN
+  // ใช้ PI เป็นคีย์หลักเสมอ; ถ้าไม่มีจริง ๆ ค่อย fallback ไปที่ SN
   const keyId = pi ? `PI_${pi}` : sn;
 
   const [issueDate, setIssueDate] = useState(() => todayISO());
@@ -151,8 +172,10 @@ export default function CleanRoomFullForm() {
   const [photoDataUrl, setPhotoDataUrl] = useState(null);
   const photoInputRef = useRef(null);
   const onPickPhoto = async (e) => {
-    const f = e.target.files?.[0]; if (!f) { setPhotoDataUrl(null); return; }
-    const dataUrl = await fileToDataURLResized(f, 1600, 0.9); setPhotoDataUrl(dataUrl);
+    const f = e.target.files?.[0];
+    if (!f) { setPhotoDataUrl(null); return; }
+    const dataUrl = await fileToDataURLResized(f, 1600, 0.9);
+    setPhotoDataUrl(dataUrl);
   };
   const clearPhoto = () => { setPhotoDataUrl(null); if (photoInputRef.current) photoInputRef.current.value = ""; };
 
@@ -187,18 +210,29 @@ export default function CleanRoomFullForm() {
   }, []);
   useFormDraft(keyId, formState, restore);
 
-  // initial load + migration SN -> PI (ถ้าจำเป็น)
+  // initial load + migration (กันพลาดทุกกรณี)
   useEffect(() => {
     let cancelled = false;
     async function boot() {
       if (!keyId) return;
       await ensureAnonSignIn();
 
-      // 1) พยายามโหลดด้วยคีย์หลัก (PI_<PI> หรือ SN)
+      // 1) ลองโหลดด้วยคีย์หลัก (PI_<PI> หรือ SN)
       let data = await loadById(keyId);
       if (cancelled) return;
 
-      // 2) ถ้าเปิดด้วย PI แล้วยังไม่เจอข้อมูล ให้ลองโหลดจาก SN แล้วคัดลอกมาเก็บใต้ PI
+      // 2) ถ้า PI เคยถูกส่งมาแบบผิด (เช่น "4210_16") จนอาจเคยเซฟไว้ที่ "PI_4210_16" ให้ย้ายกลับมา "PI_<PI>"
+      const piRaw = qs.get("PI") || qs.get("pi") || "";
+      if (!data && pi && piRaw.includes("_")) {
+        const wrongKey = `PI_${piRaw}`;
+        const wrongData = await loadById(wrongKey);
+        if (wrongData) {
+          await saveById(`PI_${pi}`, { ...wrongData, keyId: `PI_${pi}`, PI: pi, SN: sn });
+          data = await loadById(`PI_${pi}`);
+        }
+      }
+
+      // 3) ถ้ายังไม่เจอ และมี SN -> migrate จาก SN -> PI
       if (!data && pi && sn) {
         const snData = await loadById(sn);
         if (snData) {
@@ -216,7 +250,7 @@ export default function CleanRoomFullForm() {
     }
     boot();
     return () => { cancelled = true; };
-  }, [keyId, issueDate, restore, pi, sn]);
+  }, [keyId, issueDate, restore, pi, sn, qs]);
 
   async function handleSave() {
     if (!keyId) { alert("ไม่พบ PI/SN ใน URL"); return; }
