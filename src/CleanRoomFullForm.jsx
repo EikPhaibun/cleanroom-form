@@ -88,21 +88,21 @@ async function getNextDocNoCloud(issueDateISO) {
   });
   return `CL-${ymd}-${String(seq).padStart(4, "0")}`;
 }
-async function loadBySN(sn) {
+async function loadById(id) {
   await ensureAnonSignIn();
-  const ref = doc(db, "cleanroom", sn);
+  const ref = doc(db, "cleanroom", id);
   const snap = await getDoc(ref);
   return snap.exists() ? snap.data() : null;
 }
-async function saveBySN(sn, payload) {
+async function saveById(id, payload) {
   await ensureAnonSignIn();
-  const ref = doc(db, "cleanroom", sn);
+  const ref = doc(db, "cleanroom", id);
   await setDoc(ref, { ...payload, updatedAt: serverTimestamp() }, { merge: true });
 }
 
-/* ========== Autosave by SN ========== */
-function useFormDraft(sn, state, restore) {
-  const key = sn ? `cleanroom:draft:${sn}` : null;
+/* ========== Autosave (per keyId) ========== */
+function useFormDraft(keyId, state, restore) {
+  const key = keyId ? `cleanroom:draft:${keyId}` : null;
 
   useEffect(() => {
     if (!key) return;
@@ -123,8 +123,15 @@ function useFormDraft(sn, state, restore) {
 /* ========== Main ========== */
 export default function CleanRoomFullForm() {
   const qs = useMemo(() => new URLSearchParams(window.location.search), []);
+  const [pi, setPi] = useState("");
   const [sn, setSn] = useState("");
-  useEffect(() => setSn(qs.get("SN") || qs.get("sn") || ""), [qs]);
+  useEffect(() => {
+    setPi(qs.get("PI") || qs.get("pi") || "");
+    setSn(qs.get("SN") || qs.get("sn") || "");
+  }, [qs]);
+
+  // ใช้ PI เป็นหลัก; ถ้าไม่มี PI (เช่นทดสอบลิ้งค์เอง) ค่อย fallback ไป SN
+  const keyId = pi ? `PI_${pi}` : sn;
 
   const [issueDate, setIssueDate] = useState(() => todayISO());
   const [docNo, setDocNo]       = useState("");
@@ -179,15 +186,15 @@ export default function CleanRoomFullForm() {
     setSigQAStaff(d.sigQAStaff ?? null); setSigQAChief(d.sigQAChief ?? null);
     setSigQAMgr(d.sigQAMgr ?? null);
   }, []);
-  useFormDraft(sn, formState, restore);
+  useFormDraft(keyId, formState, restore);
 
-  // initial load by SN
+  // initial load
   useEffect(() => {
     let cancelled = false;
     async function boot() {
-      if (!sn) return;
+      if (!keyId) return;
       await ensureAnonSignIn();
-      const data = await loadBySN(sn);
+      const data = await loadById(keyId);
       if (cancelled) return;
       if (data) restore(data);
       else {
@@ -197,22 +204,22 @@ export default function CleanRoomFullForm() {
     }
     boot();
     return () => { cancelled = true; };
-  }, [sn, issueDate, restore]);
+  }, [keyId, issueDate, restore]);
 
   async function handleSave() {
-    if (!sn) { alert("ไม่พบ SN ใน URL"); return; }
+    if (!keyId) { alert("ไม่พบ PI/SN ใน URL"); return; }
     await ensureAnonSignIn();
     let finalDocNo = docNo;
     if (!finalDocNo) { finalDocNo = await getNextDocNoCloud(issueDate || todayISO()); setDocNo(finalDocNo); }
     const payload = {
-      SN: sn,
+      keyId, PI: pi || null, SN: sn || null,
       issueDate, docNo: finalDocNo, partName, partDetails, reasonDetails, locationDetails, importDate,
       hasMSDS, needInform, evalResult, qaMgrApprove, related,
       photoDataUrl,
       sigRequester, sigChief, sigMgr, sigSectionMgr, sigQAStaff, sigQAChief, sigQAMgr,
       savedAt: new Date().toISOString(),
     };
-    try { await saveBySN(sn, payload); alert("บันทึกขึ้น Cloud (Firestore) สำเร็จ ✅"); }
+    try { await saveById(keyId, payload); alert("บันทึกขึ้น Cloud (Firestore) สำเร็จ ✅"); }
     catch (e) { console.error(e); alert("บันทึกไม่สำเร็จ: " + (e.message || e)); }
   }
 
@@ -354,7 +361,7 @@ export default function CleanRoomFullForm() {
             <td colSpan={3} className="signCell"><SignaturePad height={140} value={sigQAMgr} onChange={setSigQAMgr} /></td>
           </tr>
 
-          <tr><td colSpan={4} className="footer">SN: {sn || "-"}</td></tr>
+          <tr><td colSpan={4} className="footer">PI: {pi || "-"} | SN: {sn || "-"}</td></tr>
         </tbody>
       </table>
 
