@@ -1,49 +1,38 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { db } from "./firebaseClient";
+import { db, ensureAnonSignIn } from "./firebaseClient";
 import {
   doc, getDoc, setDoc, runTransaction, serverTimestamp
 } from "firebase/firestore";
 
-/* ================= Helpers: date, image resize ================= */
+/* ========== Utils ========== */
 function todayISO() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
-
 async function fileToDataURLResized(file, maxSize = 1600, quality = 0.9) {
   const dataURL = await new Promise((res, rej) => {
     const fr = new FileReader();
-    fr.onload = () => res(fr.result);
-    fr.onerror = rej;
-    fr.readAsDataURL(file);
+    fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(file);
   });
   const img = await new Promise((res, rej) => {
-    const im = new Image();
-    im.onload = () => res(im);
-    im.onerror = rej;
-    im.src = dataURL;
+    const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = dataURL;
   });
-  const w = img.width, h = img.height;
-  const scale = Math.min(1, maxSize / Math.max(w, h));
+  const w = img.width, h = img.height, scale = Math.min(1, maxSize / Math.max(w, h));
   if (scale >= 1) return dataURL;
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(w * scale);
-  canvas.height = Math.round(h * scale);
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+  const ctx = canvas.getContext("2d"); ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL("image/jpeg", quality);
 }
-
 function throttle(fn, ms) {
   let t, last = 0;
-  return (...args) => {
-    const now = Date.now();
-    if (now - last >= ms) { last = now; fn(...args); }
-    else { clearTimeout(t); t = setTimeout(() => { last = Date.now(); fn(...args); }, ms - (now - last)); }
+  return (...a) => { const now = Date.now();
+    if (now - last >= ms) { last = now; fn(...a); }
+    else { clearTimeout(t); t = setTimeout(() => { last = Date.now(); fn(...a); }, ms - (now - last)); }
   };
 }
 
-/* ================= Signature Pad (no libs) ================= */
+/* ========== Signature Pad (no libs) ========== */
 function SignaturePad({ height = 120, onChange, value }) {
   const canvasRef = useRef(null);
   const drawing = useRef(false);
@@ -51,18 +40,11 @@ function SignaturePad({ height = 120, onChange, value }) {
   useEffect(() => {
     const cvs = canvasRef.current;
     const ratio = Math.max(window.devicePixelRatio || 1, 1);
-    const w = cvs.clientWidth * ratio;
-    const h = cvs.clientHeight * ratio;
+    const w = cvs.clientWidth * ratio, h = cvs.clientHeight * ratio;
     cvs.width = w; cvs.height = h;
     const ctx = cvs.getContext("2d");
-    ctx.scale(ratio, ratio);
-    ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
-
-    if (value) {
-      const img = new Image();
-      img.onload = () => ctx.drawImage(img, 0, 0, cvs.clientWidth, cvs.clientHeight);
-      img.src = value;
-    }
+    ctx.scale(ratio, ratio); ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    if (value) { const img = new Image(); img.onload = () => ctx.drawImage(img,0,0,cvs.clientWidth,cvs.clientHeight); img.src = value; }
   }, [value]);
 
   const pos = (e) => {
@@ -70,31 +52,10 @@ function SignaturePad({ height = 120, onChange, value }) {
     const p = e.touches?.[0] ?? e;
     return { x: p.clientX - rect.left, y: p.clientY - rect.top };
   };
-
-  const start = (e) => {
-    drawing.current = true;
-    const { x, y } = pos(e);
-    const ctx = canvasRef.current.getContext("2d");
-    ctx.beginPath(); ctx.moveTo(x, y);
-    e.preventDefault();
-  };
-  const move = (e) => {
-    if (!drawing.current) return;
-    const { x, y } = pos(e);
-    const ctx = canvasRef.current.getContext("2d");
-    ctx.lineTo(x, y); ctx.stroke();
-    e.preventDefault();
-  };
-  const end = () => {
-    if (!drawing.current) return;
-    drawing.current = false;
-    onChange?.(canvasRef.current.toDataURL("image/png"));
-  };
-  const clear = () => {
-    const cvs = canvasRef.current, ctx = cvs.getContext("2d");
-    ctx.clearRect(0, 0, cvs.width, cvs.height);
-    onChange?.(null);
-  };
+  const start = (e) => { drawing.current = true; const {x,y}=pos(e); const ctx = canvasRef.current.getContext("2d"); ctx.beginPath(); ctx.moveTo(x,y); e.preventDefault(); };
+  const move  = (e) => { if (!drawing.current) return; const {x,y}=pos(e); const ctx = canvasRef.current.getContext("2d"); ctx.lineTo(x,y); ctx.stroke(); e.preventDefault(); };
+  const end   = () => { if (!drawing.current) return; drawing.current = false; onChange?.(canvasRef.current.toDataURL("image/png")); };
+  const clear = () => { const cvs = canvasRef.current, ctx = cvs.getContext("2d"); ctx.clearRect(0,0,cvs.width,cvs.height); onChange?.(null); };
 
   return (
     <div className="sig-wrap">
@@ -113,9 +74,9 @@ function SignaturePad({ height = 120, onChange, value }) {
   );
 }
 
-/* ================= Cloud (Firestore) ================= */
-// docCounters/{yyyymmdd}.seq -> รันเลขเอกสารกลาง (ไม่ชน)
+/* ========== Firestore helpers ========== */
 async function getNextDocNoCloud(issueDateISO) {
+  await ensureAnonSignIn();
   const ymd = (issueDateISO || todayISO()).replace(/-/g, "");
   const counterRef = doc(db, "docCounters", ymd);
   const seq = await runTransaction(db, async (tx) => {
@@ -127,34 +88,30 @@ async function getNextDocNoCloud(issueDateISO) {
   });
   return `CL-${ymd}-${String(seq).padStart(4, "0")}`;
 }
-
 async function loadBySN(sn) {
+  await ensureAnonSignIn();
   const ref = doc(db, "cleanroom", sn);
   const snap = await getDoc(ref);
   return snap.exists() ? snap.data() : null;
 }
-
 async function saveBySN(sn, payload) {
+  await ensureAnonSignIn();
   const ref = doc(db, "cleanroom", sn);
   await setDoc(ref, { ...payload, updatedAt: serverTimestamp() }, { merge: true });
 }
 
-/* ================= Autosave (localStorage by SN) ================= */
+/* ========== Autosave by SN ========== */
 function useFormDraft(sn, state, restore) {
   const key = sn ? `cleanroom:draft:${sn}` : null;
 
   useEffect(() => {
     if (!key) return;
-    try {
-      const raw = localStorage.getItem(key);
-      if (raw) restore(JSON.parse(raw));
-    } catch {}
+    try { const raw = localStorage.getItem(key); if (raw) restore(JSON.parse(raw)); } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
   const save = React.useMemo(() => throttle((data) => {
-    if (!key) return;
-    try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
+    if (!key) return; try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
   }, 600), [key]);
 
   useEffect(() => { if (key) save(state); }, [state, key, save]);
@@ -163,26 +120,24 @@ function useFormDraft(sn, state, restore) {
   return { clear };
 }
 
-/* ================= Main ================= */
+/* ========== Main ========== */
 export default function CleanRoomFullForm() {
   const qs = useMemo(() => new URLSearchParams(window.location.search), []);
   const [sn, setSn] = useState("");
-
   useEffect(() => setSn(qs.get("SN") || qs.get("sn") || ""), [qs]);
 
-  // fields
   const [issueDate, setIssueDate] = useState(() => todayISO());
-  const [docNo, setDocNo] = useState("");
+  const [docNo, setDocNo]       = useState("");
 
-  const [partName, setPartName] = useState("");
-  const [partDetails, setPartDetails] = useState("");
-  const [reasonDetails, setReasonDetails] = useState("");
+  const [partName, setPartName]             = useState("");
+  const [partDetails, setPartDetails]       = useState("");
+  const [reasonDetails, setReasonDetails]   = useState("");
   const [locationDetails, setLocationDetails] = useState("");
-  const [importDate, setImportDate] = useState("");
-  const [hasMSDS, setHasMSDS] = useState(null);
-  const [needInform, setNeedInform] = useState(null);
-  const [evalResult, setEvalResult] = useState(null);
-  const [qaMgrApprove, setQaMgrApprove] = useState(null);
+  const [importDate, setImportDate]         = useState("");
+  const [hasMSDS, setHasMSDS]               = useState(null);
+  const [needInform, setNeedInform]         = useState(null);
+  const [evalResult, setEvalResult]         = useState(null);
+  const [qaMgrApprove, setQaMgrApprove]     = useState(null);
 
   const relatedList = ["MFG1","MFG2","ENG1","ENG2","QA","QE","QEV","MCA","POS"];
   const [related, setRelated] = useState(Object.fromEntries(relatedList.map(k=>[k,false])));
@@ -190,63 +145,52 @@ export default function CleanRoomFullForm() {
   const [photoDataUrl, setPhotoDataUrl] = useState(null);
   const photoInputRef = useRef(null);
   const onPickPhoto = async (e) => {
-    const f = e.target.files?.[0];
-    if (!f) { setPhotoDataUrl(null); return; }
-    const dataUrl = await fileToDataURLResized(f, 1600, 0.9);
-    setPhotoDataUrl(dataUrl);
+    const f = e.target.files?.[0]; if (!f) { setPhotoDataUrl(null); return; }
+    const dataUrl = await fileToDataURLResized(f, 1600, 0.9); setPhotoDataUrl(dataUrl);
   };
   const clearPhoto = () => { setPhotoDataUrl(null); if (photoInputRef.current) photoInputRef.current.value = ""; };
 
-  const [sigRequester, setSigRequester] = useState(null);
-  const [sigChief, setSigChief] = useState(null);
-  const [sigMgr, setSigMgr] = useState(null);
+  const [sigRequester, setSigRequester]   = useState(null);
+  const [sigChief, setSigChief]           = useState(null);
+  const [sigMgr, setSigMgr]               = useState(null);
   const [sigSectionMgr, setSigSectionMgr] = useState(null);
-  const [sigQAStaff, setSigQAStaff] = useState(null);
-  const [sigQAChief, setSigQAChief] = useState(null);
-  const [sigQAMgr, setSigQAMgr] = useState(null);
+  const [sigQAStaff, setSigQAStaff]       = useState(null);
+  const [sigQAChief, setSigQAChief]       = useState(null);
+  const [sigQAMgr, setSigQAMgr]           = useState(null);
 
   const formState = {
     issueDate, docNo, partName, partDetails, reasonDetails, locationDetails, importDate,
-    hasMSDS, needInform, evalResult, qaMgrApprove,
-    related, photoDataUrl,
+    hasMSDS, needInform, evalResult, qaMgrApprove, related, photoDataUrl,
     sigRequester, sigChief, sigMgr, sigSectionMgr, sigQAStaff, sigQAChief, sigQAMgr,
   };
+
   const restore = React.useCallback((d) => {
     if (!d) return;
-    setIssueDate(d.issueDate ?? todayISO());
-    setDocNo(d.docNo ?? "");
-    setPartName(d.partName ?? "");
-    setPartDetails(d.partDetails ?? "");
-    setReasonDetails(d.reasonDetails ?? "");
-    setLocationDetails(d.locationDetails ?? "");
+    setIssueDate(d.issueDate ?? todayISO()); setDocNo(d.docNo ?? "");
+    setPartName(d.partName ?? ""); setPartDetails(d.partDetails ?? "");
+    setReasonDetails(d.reasonDetails ?? ""); setLocationDetails(d.locationDetails ?? "");
     setImportDate(d.importDate ?? "");
-    setHasMSDS(d.hasMSDS ?? null);
-    setNeedInform(d.needInform ?? null);
-    setEvalResult(d.evalResult ?? null);
-    setQaMgrApprove(d.qaMgrApprove ?? null);
+    setHasMSDS(d.hasMSDS ?? null); setNeedInform(d.needInform ?? null);
+    setEvalResult(d.evalResult ?? null); setQaMgrApprove(d.qaMgrApprove ?? null);
     setRelated(d.related ?? Object.fromEntries(relatedList.map(k=>[k,false])));
     setPhotoDataUrl(d.photoDataUrl ?? null);
-    setSigRequester(d.sigRequester ?? null);
-    setSigChief(d.sigChief ?? null);
-    setSigMgr(d.sigMgr ?? null);
-    setSigSectionMgr(d.sigSectionMgr ?? null);
-    setSigQAStaff(d.sigQAStaff ?? null);
-    setSigQAChief(d.sigQAChief ?? null);
+    setSigRequester(d.sigRequester ?? null); setSigChief(d.sigChief ?? null);
+    setSigMgr(d.sigMgr ?? null); setSigSectionMgr(d.sigSectionMgr ?? null);
+    setSigQAStaff(d.sigQAStaff ?? null); setSigQAChief(d.sigQAChief ?? null);
     setSigQAMgr(d.sigQAMgr ?? null);
   }, []);
-  useFormDraft(sn, formState, restore); // autosave local
+  useFormDraft(sn, formState, restore);
 
-  // first-load by SN: load from Firestore OR allocate docNo
+  // initial load by SN
   useEffect(() => {
     let cancelled = false;
     async function boot() {
       if (!sn) return;
+      await ensureAnonSignIn();
       const data = await loadBySN(sn);
       if (cancelled) return;
-      if (data) {
-        restore(data);
-      } else {
-        // new doc -> get cloud docNo
+      if (data) restore(data);
+      else {
         const newDoc = await getNextDocNoCloud(issueDate || todayISO());
         if (!cancelled) setDocNo(newDoc);
       }
@@ -257,31 +201,21 @@ export default function CleanRoomFullForm() {
 
   async function handleSave() {
     if (!sn) { alert("ไม่พบ SN ใน URL"); return; }
+    await ensureAnonSignIn();
     let finalDocNo = docNo;
-    if (!finalDocNo) {
-      finalDocNo = await getNextDocNoCloud(issueDate || todayISO());
-      setDocNo(finalDocNo);
-    }
+    if (!finalDocNo) { finalDocNo = await getNextDocNoCloud(issueDate || todayISO()); setDocNo(finalDocNo); }
     const payload = {
       SN: sn,
-      issueDate, docNo: finalDocNo,
-      partName, partDetails, reasonDetails, locationDetails, importDate,
-      hasMSDS, needInform, evalResult, qaMgrApprove,
-      related,
+      issueDate, docNo: finalDocNo, partName, partDetails, reasonDetails, locationDetails, importDate,
+      hasMSDS, needInform, evalResult, qaMgrApprove, related,
       photoDataUrl,
       sigRequester, sigChief, sigMgr, sigSectionMgr, sigQAStaff, sigQAChief, sigQAMgr,
       savedAt: new Date().toISOString(),
     };
-    try {
-      await saveBySN(sn, payload);
-      alert("บันทึกขึ้น Cloud (Firestore) สำเร็จ ✅");
-    } catch (e) {
-      console.error(e);
-      alert("บันทึกไม่สำเร็จ: " + (e.message || e));
-    }
+    try { await saveBySN(sn, payload); alert("บันทึกขึ้น Cloud (Firestore) สำเร็จ ✅"); }
+    catch (e) { console.error(e); alert("บันทึกไม่สำเร็จ: " + (e.message || e)); }
   }
 
-  // UI
   const photoInput = (
     <div className="no-print photo-tools">
       <input ref={photoInputRef} type="file" accept="image/*" onChange={onPickPhoto}/>
@@ -364,7 +298,7 @@ export default function CleanRoomFullForm() {
             <td className="signCell"><textarea className="ta" style={{height:118}} /></td>
           </tr>
 
-          {/* Related section */}
+          {/* Related */}
           <tr><td className="sectionTitle" colSpan={4}>เฉพาะแผนกที่เกี่ยวข้องร่วมพิจารณา (For related section by identify.)</td></tr>
           <tr>
             <td colSpan={4} className="relWrap">
@@ -431,7 +365,7 @@ export default function CleanRoomFullForm() {
   );
 }
 
-/* ================= CSS ================= */
+/* ========== CSS ========== */
 const css = `
 @page { size: A4; margin: 10mm; }
 * { box-sizing: border-box; font-family: "Segoe UI","TH Sarabun New", Arial, sans-serif; }
