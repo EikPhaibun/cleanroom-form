@@ -287,7 +287,7 @@ export default function CleanRoomFullForm() {
   return (
     <div className="page">
       <style>{css}</style>
-      <div className="company-line">NBK Spring (Thailand) Co.,Ltd : DDS Division</div>
+      <div className="company-line">NHK Spring (Thailand) Co.,Ltd : DDS Division</div>
 
       <table className="form">
         <colgroup>
